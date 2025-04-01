@@ -197,6 +197,30 @@ static struct shaper_pd_t *find_pd(struct ap_session *ses, int create)
 	return NULL;
 }
 
+static int install_limiter_rules(struct ap_session *ses, struct shaper_pd_t *pd)
+{
+	struct shaper_rule *rule;
+
+	list_for_each_entry(rule, &pd->rules, entry) {
+		if (rule->down_speed <= 0 && rule->up_speed <= 0)
+			continue;
+
+		if (!pd->idx)
+			pd->idx = alloc_idx(ses->ifindex);
+
+		if (install_htb_with_fwmark(ses, rule, pd->idx)) {
+			log_ppp_error("shaper: failed to install fwmark shaper (fwmark=%d)\n", rule->fwmark);
+			return -1;
+		}
+
+		if (conf_verbose)
+			log_ppp_info2("shaper: installed fwmark shaper %d: %d/%d Kbit\n",
+				rule->fwmark, rule->down_speed, rule->up_speed);
+	}
+
+	return 0;
+}
+
 static long int parse_integer(const char *str, char **endptr, double *multiplier)
 {
 	const static struct {
@@ -651,30 +675,6 @@ static void ev_ppp_pre_up(struct ap_session *ses)
 				log_ppp_info2("shaper: installed shaper %i/%i (Kbit)\n", down_speed, up_speed);
 		}
 	}
-}
-
-static int install_limiter_rules(struct ap_session *ses, struct shaper_pd_t *pd)
-{
-	struct shaper_rule *rule;
-
-	list_for_each_entry(rule, &pd->rules, entry) {
-		if (rule->down_speed <= 0 && rule->up_speed <= 0)
-			continue;
-
-		if (!pd->idx)
-			pd->idx = alloc_idx(ses->ifindex);
-
-		if (install_htb_with_fwmark(ses, rule, pd->idx)) {
-			log_ppp_error("shaper: failed to install fwmark shaper (fwmark=%d)\n", rule->fwmark);
-			return -1;
-		}
-
-		if (conf_verbose)
-			log_ppp_info2("shaper: installed fwmark shaper %d: %d/%d Kbit\n",
-				rule->fwmark, rule->down_speed, rule->up_speed);
-	}
-
-	return 0;
 }
 
 static void ev_ppp_finishing(struct ap_session *ses)
