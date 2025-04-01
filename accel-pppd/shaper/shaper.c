@@ -480,16 +480,16 @@ static void remove_limiter_rules(struct ap_session *ses, struct shaper_pd_t *pd)
 static int check_radius_attrs(struct shaper_pd_t *pd, struct rad_packet_t *pack)
 {
     struct rad_attr_t *attr;
-    int down_speed, down_burst;
-    int up_speed, up_burst;
-    int tr_id;
     struct time_range_pd_t *tr_pd;
-    int r = 0;
+    int had_rules = !list_empty(&pd->rules); // Запоминаем, были ли правила ранее
 
     list_for_each_entry(tr_pd, &pd->tr_list, entry)
         tr_pd->act = 0;
 
     pd->cur_tr = NULL;
+
+    // Очищаем старые правила
+    remove_limiter_rules(pd->ses, pd);
 
     list_for_each_entry(attr, &pack->attrs, entry) {
         parse_radius_attr(pd, attr);
@@ -504,15 +504,16 @@ static int check_radius_attrs(struct shaper_pd_t *pd, struct rad_packet_t *pack)
         }
     }
     
-    if (!r)
-        return 0;
-
+    // Проверяем, появились ли новые правила или изменились старые
+    if (had_rules || !list_empty(&pd->rules))
+        return 1; // Есть изменения, нужно применить
+    
     if (!pd->cur_tr)
         pd->cur_tr = get_tr_pd(pd, 0);
 
     clear_old_tr_pd(pd);
 
-    return 1;
+    return 0; // Нет изменений
 }
 
 static void ev_radius_access_accept(struct ev_radius_t *ev)
@@ -522,8 +523,18 @@ static void ev_radius_access_accept(struct ev_radius_t *ev)
     if (!pd)
         return;
 
-    check_radius_attrs(pd, ev->reply);
+    // Проверяем наличие RADIUS атрибутов для fwmark шейперов
+    if (check_radius_attrs(pd, ev->reply) && !list_empty(&pd->rules)) {
+        // Есть правила, нужно установить шейперы
+        if (!pd->idx)
+            pd->idx = alloc_idx(ev->ses->ifindex);
+        
+        install_limiter_rules(ev->ses, pd);
+        if (conf_verbose)
+            log_ppp_info2("shaper: fwmark rules installed\n");
+    }
 }
+
 
 static void ev_radius_coa(struct ev_radius_t *ev)
 {
