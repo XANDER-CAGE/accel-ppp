@@ -55,4 +55,16 @@ void leaf_qdisc_parse(const char *);
 
 int tc_qdisc_modify(struct rtnl_handle *rth, int ifindex, int cmd, unsigned flags, struct qdisc_opt *opt);
 
+struct shaper_rule {
+    int fwmark;                 // fwmark для фильтрации трафика
+    int up_speed;               // скорость в аплинк (Kbps)
+    int up_burst;               // burst в аплинк (байт)
+    int down_speed;             // скорость в даунлинк (Kbps)
+    int down_burst;             // burst в даунлинк (байт)
+    struct list_head entry;     // связка в списке
+};
+
+int install_htb_with_fwmark(struct ap_session *ses, struct shaper_rule *rule, int base_classid);
+int remove_htb_with_fwmark(struct ap_session *ses, struct shaper_rule *rule);
+
 #endif

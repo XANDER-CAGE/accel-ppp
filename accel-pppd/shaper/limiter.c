@@ -277,6 +277,106 @@ static int install_htb(struct rtnl_handle *rth, int ifindex, int rate, int burst
 	return 0;
 }
 
+int install_htb_with_fwmark(struct ap_session *ses, struct shaper_rule *rule, int base_classid)
+{
+	int ifindex = ses->ifindex;
+	struct rtnl_handle *rth = &g_rth;
+	uint32_t classid = TC_H_MAKE(0x1, rule->fwmark);  // уникальный classid для каждого fwmark
+	uint32_t parent = TC_H_MAKE(0x1, 0);              // основа дерева HTB
+	uint32_t handle = TC_H_MAKE(1, 0);                // HTB root
+
+	struct qdisc_opt root_opt = {
+		.kind = "htb",
+		.handle = handle,
+		.parent = TC_H_ROOT,
+		.quantum = conf_r2q,
+		.defcls = 1,
+		.qdisc = qdisc_htb_root,
+	};
+
+	struct qdisc_opt class_opt = {
+		.kind = "htb",
+		.handle = classid,
+		.parent = parent,
+		.rate = rule->down_speed,
+		.buffer = rule->down_burst,
+		.quantum = conf_quantum,
+		.qdisc = qdisc_htb_class,
+	};
+
+	// Установка корневого HTB (один раз на интерфейс)
+	tc_qdisc_modify(rth, ifindex, RTM_NEWQDISC, NLM_F_CREATE|NLM_F_EXCL, &root_opt);
+
+	// Добавление класса с нужной скоростью
+	tc_qdisc_modify(rth, ifindex, RTM_NEWTCLASS, NLM_F_CREATE|NLM_F_EXCL, &class_opt);
+
+	// Добавление фильтра с fwmark
+	struct {
+		struct nlmsghdr n;
+		struct tcmsg t;
+		char buf[TCA_BUF_MAX];
+	} req;
+
+	memset(&req, 0, sizeof(req));
+	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
+	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL;
+	req.n.nlmsg_type = RTM_NEWTFILTER;
+	req.t.tcm_family = AF_UNSPEC;
+	req.t.tcm_ifindex = ifindex;
+	req.t.tcm_parent = TC_H_ROOT;
+	req.t.tcm_info = TC_H_MAKE(1, htons(ETH_P_ALL));
+
+	addattr_l(&req.n, sizeof(req), TCA_KIND, "fw", 3);
+	struct rtattr *tail = NLMSG_TAIL(&req.n);
+	addattr_l(&req.n, sizeof(req), TCA_OPTIONS, NULL, 0);
+	addattr_l(&req.n, sizeof(req), TCA_FW_CLASSID, &classid, sizeof(classid));
+	tail->rta_len = (void *)NLMSG_TAIL(&req.n) - (void *)tail;
+
+	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
+		return -1;
+
+	return 0;
+}
+
+int remove_htb_with_fwmark(struct ap_session *ses, struct shaper_rule *rule)
+{
+	struct rtnl_handle *rth = &g_rth;
+	int ifindex = ses->ifindex;
+	uint32_t classid = TC_H_MAKE(0x1, rule->fwmark);
+
+	struct qdisc_opt class_opt = {
+		.kind = "htb",
+		.handle = classid,
+		.parent = TC_H_MAKE(0x1, 0),
+	};
+
+	// Удаление фильтра fw
+	struct {
+		struct nlmsghdr n;
+		struct tcmsg t;
+		char buf[TCA_BUF_MAX];
+	} req;
+
+	memset(&req, 0, sizeof(req));
+	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
+	req.n.nlmsg_flags = NLM_F_REQUEST;
+	req.n.nlmsg_type = RTM_DELTFILTER;
+	req.t.tcm_family = AF_UNSPEC;
+	req.t.tcm_ifindex = ifindex;
+	req.t.tcm_parent = TC_H_ROOT;
+	req.t.tcm_info = TC_H_MAKE(1, htons(ETH_P_ALL));
+
+	addattr_l(&req.n, sizeof(req), TCA_KIND, "fw", 3);
+
+	rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 1);  // Best effort
+
+	// Удаление класса HTB
+	tc_qdisc_modify(rth, ifindex, RTM_DELTCLASS, 0, &class_opt);
+
+	return 0;
+}
+
+
 static int install_police(struct rtnl_handle *rth, int ifindex, int rate, int burst)
 {
 	__u32 rtab[256];
@@ -540,32 +640,13 @@ static int remove_htb_ifb(struct rtnl_handle *rth, int ifindex, int priority)
 
 int install_limiter(struct ap_session *ses, int down_speed, int down_burst, int up_speed, int up_burst, int idx)
 {
-    struct rtnl_handle *rth = net->rtnl_get();
+	struct rtnl_handle *rth = net->rtnl_get();
 	int r = 0;
 
 	if (!rth) {
 		log_ppp_error("shaper: cannot open rtnetlink\n");
 		return -1;
 	}
-
-	/* Determine if we have marked traffic shapers requiring base qdisc setup */
-	struct shaper_pd_t *pd = find_pd(ses, 0);
-	int have_mark_down = 0, have_mark_up = 0;
-	if (pd) {
-		struct fwmark_class *fw;
-		list_for_each_entry(fw, &pd->fwmark_list, entry) {
-			if (fw->down_speed)
-				have_mark_down = 1;
-			if (fw->up_speed)
-				have_mark_up = 1;
-		}
-	}
-
-	if (!down_speed && have_mark_down)
-	down_speed = 10000000;  /* 10 Gbit as effectively unlimited base rate */
-	if (!up_speed && have_mark_up)
-		up_speed = 10000000;
-	
 
 	if (down_speed) {
 		down_speed = down_speed * 1000 / 8;
@@ -583,46 +664,6 @@ int install_limiter(struct ap_session *ses, int down_speed, int down_burst, int 
 				r = install_leaf_qdisc(rth, ses->ifindex, 0x00010001, 0x00020000);
 		}
 	}
-
-	 /* Add additional HTB classes for marked traffic */
-	 if (conf_down_limiter == LIM_HTB && pd) {
-        struct fwmark_class *fw;
-        list_for_each_entry(fw, &pd->fwmark_list, entry) {
-            if (!fw->down_speed || fw->mark == 0)
-                continue;
-            struct qdisc_opt opt = {
-                .kind   = "htb",
-                .handle = 0x00010000 + (fw->mark + 1),
-                .parent = 0x00010000,
-                .rate   = fw->down_speed * 1000 / 8,
-                .buffer = fw->down_burst ? fw->down_burst : conf_down_burst_factor * (fw->down_speed * 1000 / 8),
-                .quantum= conf_quantum,
-                .qdisc  = qdisc_htb_class
-            };
-            tc_qdisc_modify(rth, ses->ifindex, RTM_NEWTCLASS, NLM_F_EXCL|NLM_F_CREATE, &opt);
-        }
-    }
-    if (conf_up_limiter == LIM_HTB && pd) {
-        struct fwmark_class *fw;
-        list_for_each_entry(fw, &pd->fwmark_list, entry) {
-            if (!fw->up_speed || fw->mark == 0)
-                continue;
-            if (!fw->idx)
-                fw->idx = alloc_idx(ses->ifindex);
-            struct qdisc_opt opt2 = {
-                .kind   = "htb",
-                .handle = 0x00010000 + fw->idx,
-                .parent = 0x00010000,
-                .rate   = fw->up_speed * 1000 / 8,
-                .buffer = fw->up_burst ? fw->up_burst : conf_up_burst_factor * (fw->up_speed * 1000 / 8),
-                .quantum= conf_quantum,
-                .qdisc  = qdisc_htb_class
-            };
-            if (tc_qdisc_modify(rth, conf_ifb_ifindex, RTM_NEWTCLASS, NLM_F_EXCL|NLM_F_CREATE, &opt2) == 0) {
-                install_leaf_qdisc(rth, conf_ifb_ifindex, 0x00010000 + fw->idx, fw->idx << 16);
-            }
-        }
-    }
 
 	if (up_speed) {
 		up_speed = up_speed * 1000 / 8;
@@ -665,19 +706,8 @@ int remove_limiter(struct ap_session *ses, int idx)
 	remove_root(rth, ses->ifindex);
 	remove_ingress(rth, ses->ifindex);
 
-	if (conf_up_limiter == LIM_HTB) {
-        /* remove all IFB classes associated with this session */
-        remove_htb_ifb(rth, ses->ifindex, idx);
-        struct shaper_pd_t *pd = find_pd(ses, 0);
-        if (pd) {
-            struct fwmark_class *fw, *tmp;
-            list_for_each_entry_safe(fw, tmp, &pd->fwmark_list, entry) {
-                if (fw->idx && fw->idx != idx) {
-                    remove_htb_ifb(rth, ses->ifindex, fw->idx);
-                }
-            }
-        }
-    }
+	if (conf_up_limiter == LIM_HTB)
+		remove_htb_ifb(rth, ses->ifindex, idx);
 
 	net->rtnl_put(rth);
 
