@@ -71,19 +71,31 @@ static int dflt_up_speed;
 static pthread_rwlock_t shaper_lock = PTHREAD_RWLOCK_INITIALIZER;
 static LIST_HEAD(shaper_list);
 
+struct fwmark_class {
+    struct list_head entry;
+    int mark;
+    int idx;
+    int down_speed;
+    int down_burst;
+    int up_speed;
+    int up_burst;
+    int seen;
+};
+
 struct time_range_pd_t;
 struct shaper_pd_t {
-	struct list_head entry;
-	struct ap_session *ses;
-	struct ap_private pd;
-	int temp_down_speed;
-	int temp_up_speed;
-	int down_speed;
-	int up_speed;
-	struct list_head tr_list;
-	struct time_range_pd_t *cur_tr;
-	int refs;
-	int idx;
+    struct list_head entry;
+    struct ap_session *ses;
+    struct ap_private pd;
+    int temp_down_speed;
+    int temp_up_speed;
+    int down_speed;
+    int up_speed;
+    struct list_head tr_list;
+    struct time_range_pd_t *cur_tr;
+    int refs;
+    int idx;
+    struct list_head fwmark_list;        /* list of additional shapers by fwmark */
 };
 
 struct time_range_pd_t {
@@ -172,18 +184,18 @@ static struct shaper_pd_t *find_pd(struct ap_session *ses, int create)
 	}
 
 	if (create) {
-		spd = _malloc(sizeof(*spd));
-		if (!spd) {
-			log_emerg("shaper: out of memory\n");
-			return NULL;
-		}
-
-		memset(spd, 0, sizeof(*spd));
-		spd->ses = ses;
-		list_add_tail(&spd->pd.entry, &ses->pd_list);
-		spd->pd.key = &pd_key;
-		INIT_LIST_HEAD(&spd->tr_list);
-		spd->refs = 1;
+        spd = _malloc(sizeof(*spd));
+        if (!spd) {
+            log_emerg("shaper: out of memory\n");
+            return NULL;
+        }
+        memset(spd, 0, sizeof(*spd));
+        spd->ses = ses;
+        list_add_tail(&spd->pd.entry, &ses->pd_list);
+        spd->pd.key = &pd_key;
+        INIT_LIST_HEAD(&spd->tr_list);
+        INIT_LIST_HEAD(&spd->fwmark_list);
+        spd->refs = 1;
 
 		pthread_rwlock_wrlock(&shaper_lock);
 		list_add_tail(&spd->entry, &shaper_list);
@@ -398,47 +410,126 @@ static int check_radius_attrs(struct shaper_pd_t *pd, struct rad_packet_t *pack)
 	int r = 0;
 
 	list_for_each_entry(tr_pd, &pd->tr_list, entry)
-		tr_pd->act = 0;
+        tr_pd->act = 0;
+    pd->cur_tr = NULL;
 
-	pd->cur_tr = NULL;
-
-	list_for_each_entry(attr, &pack->attrs, entry) {
-		if (attr->vendor && attr->vendor->id != conf_vendor)
-			continue;
-		if (!attr->vendor && conf_vendor)
-			continue;
-		if (attr->attr->id != conf_attr_down && attr->attr->id != conf_attr_up)
-			continue;
-		r = 1;
-		tr_id = 0;
-		down_speed = 0;
-		down_burst = 0;
-		up_speed = 0;
-		up_burst = 0;
-		if (attr->attr->id == conf_attr_down)
-			parse_attr(attr, ATTR_DOWN, &down_speed, &down_burst, &tr_id);
-		if (attr->attr->id == conf_attr_up)
-			parse_attr(attr, ATTR_UP, &up_speed, &up_burst, &tr_id);
-		tr_pd = get_tr_pd(pd, tr_id);
-		if (down_speed)
-			tr_pd->down_speed = down_speed;
-		if (down_burst)
-			tr_pd->down_burst = down_burst;
-		if (up_speed)
-			tr_pd->up_speed = up_speed;
-		if (up_burst)
-			tr_pd->up_burst = up_burst;
+	/* mark all existing fwmark shapers as not updated */
+	if (!list_empty(&pd->fwmark_list)) {
+		struct fwmark_class *fw;
+		list_for_each_entry(fw, &pd->fwmark_list, entry) {
+			fw->seen = 0;
+		}
 	}
 
-	if (!r)
-		return 0;
-
-	if (!pd->cur_tr)
-		pd->cur_tr = get_tr_pd(pd, 0);
-
-	clear_old_tr_pd(pd);
-
-	return 1;
+	list_for_each_entry(attr, &pack->attrs, entry) {
+        if (attr->vendor && attr->vendor->id != conf_vendor)
+            continue;
+        if (!attr->vendor && conf_vendor)
+            continue;
+        
+        const char *aname = attr->attr->name;
+        int mark = 0;
+        int is_down_attr = 0;
+        if (attr->attr->id == conf_attr_down || (aname && strncmp(aname, "PPPD-Downstream-Speed-Limit", 27) == 0 
+                && (aname[27] == '\0' || aname[27] == '-'))) {
+            is_down_attr = 1;
+        } else if (attr->attr->id == conf_attr_up || (aname && strncmp(aname, "PPPD-Upstream-Speed-Limit", 26) == 0 
+                && (aname[26] == '\0' || aname[26] == '-'))) {
+            is_down_attr = 0;
+        } else {
+            continue;
+        }
+        
+        /* determine mark from attribute name suffix (if any) */
+        if (aname) {
+            const char *dash = strrchr(aname, '-');
+            if (dash && *(dash + 1) != '\0') {
+                char *endptr;
+                long mval = strtol(dash + 1, &endptr, 10);
+                if (*endptr == '\0' && mval >= 0 && mval <= 65535) {
+                    mark = (int)mval;
+                }
+            }
+        }
+        
+        r = 1;
+        tr_id = 0;
+        down_speed = up_speed = 0;
+        down_burst = up_burst = 0;
+        
+        if (is_down_attr) {
+            parse_attr(attr, ATTR_DOWN, &down_speed, &down_burst, &tr_id);
+        } else {
+            parse_attr(attr, ATTR_UP, &up_speed, &up_burst, &tr_id);
+        }
+        
+        if (mark != 0) {
+            /* handle marked traffic shaper */
+            struct fwmark_class *fw = NULL;
+            list_for_each_entry(fw, &pd->fwmark_list, entry) {
+                if (fw->mark == mark) {
+                    break;
+                }
+            }
+            if (!fw || fw->mark != mark) {
+                fw = _malloc(sizeof(*fw));
+                if (!fw) {
+                    log_emerg("shaper: out of memory (fwmark)\n");
+                    continue;
+                }
+                memset(fw, 0, sizeof(*fw));
+                fw->mark = mark;
+                fw->idx = 0;
+                INIT_LIST_HEAD(&fw->entry);
+                list_add_tail(&fw->entry, &pd->fwmark_list);
+            }
+            fw->seen = 1;
+            if (is_down_attr && down_speed) {
+                fw->down_speed = down_speed;
+                fw->down_burst = down_burst;
+            }
+            if (!is_down_attr && up_speed) {
+                fw->up_speed = up_speed;
+                fw->up_burst = up_burst;
+            }
+            /* skip time-range assignment for marked attribute */
+            continue;
+        }
+        
+        /* Unmarked (default) traffic: apply to time-range structure */
+        if (down_speed || up_speed) {
+            tr_pd = get_tr_pd(pd, tr_id);
+            if (down_speed)
+                tr_pd->down_speed = down_speed;
+            if (down_burst)
+                tr_pd->down_burst = down_burst;
+            if (up_speed)
+                tr_pd->up_speed = up_speed;
+            if (up_burst)
+                tr_pd->up_burst = up_burst;
+        }
+    }
+    
+    if (!r)
+        return 0;
+    if (!pd->cur_tr)
+        pd->cur_tr = get_tr_pd(pd, 0);
+    
+    /* remove any fwmark classes that were not seen in this update */
+    if (!list_empty(&pd->fwmark_list)) {
+        struct fwmark_class *fw, *tmp;
+        list_for_each_entry_safe(fw, tmp, &pd->fwmark_list, entry) {
+            if (!fw->seen) {
+                if (conf_verbose)
+                    log_ppp_info2("shaper: removed fwmark %d\n", fw->mark);
+                list_del(&fw->entry);
+                _free(fw);
+            }
+        }
+    }
+    
+    clear_old_tr_pd(pd);
+    return 1;
 }
 
 static void ev_radius_access_accept(struct ev_radius_t *ev)
@@ -453,55 +544,54 @@ static void ev_radius_access_accept(struct ev_radius_t *ev)
 
 static void ev_radius_coa(struct ev_radius_t *ev)
 {
-	struct shaper_pd_t *pd = find_pd(ev->ses, 0);
+    struct shaper_pd_t *pd = find_pd(ev->ses, 0);
 
-	if (!pd) {
-		ev->res = -1;
-		return;
-	}
+    if (!pd) {
+        ev->res = -1;
+        return;
+    }
 
-	if (!check_radius_attrs(pd, ev->request))
-		return;
+    if (!check_radius_attrs(pd, ev->request)) {
+        /* No shaping attributes in CoA: remove all existing shapers */
+        if (pd->down_speed || pd->up_speed || !list_empty(&pd->fwmark_list)) {
+            if (conf_verbose)
+                log_ppp_info2("shaper: removed shaper (CoA)\n");
+            remove_limiter(ev->ses, pd->idx);
+            pd->down_speed = 0;
+            pd->up_speed = 0;
+            /* free all fwmark shaper entries */
+            struct fwmark_class *fw, *tmp;
+            list_for_each_entry_safe(fw, tmp, &pd->fwmark_list, entry) {
+                list_del(&fw->entry);
+                _free(fw);
+            }
+        }
+        return;
+    }
 
-	if (pd->temp_down_speed || pd->temp_up_speed)
-		return;
+    if (pd->temp_down_speed || pd->temp_up_speed)
+        return;
 
-	if (!pd->cur_tr) {
-		if (pd->down_speed || pd->up_speed) {
-			pd->down_speed = 0;
-			pd->up_speed = 0;
-			if (conf_verbose)
-				log_ppp_info2("shaper: removed shaper\n");
-			remove_limiter(ev->ses, pd->idx);
-		}
-		return;
-	}
-
-	if (pd->down_speed != pd->cur_tr->down_speed || pd->up_speed != pd->cur_tr->up_speed) {
-		pd->down_speed = pd->cur_tr->down_speed;
-		pd->up_speed = pd->cur_tr->up_speed;
-
-		if (pd->idx && remove_limiter(ev->ses, pd->idx)) {
-			ev->res = -1;
-			return;
-		}
-
-		if (pd->down_speed > 0 || pd->up_speed > 0) {
-			if (!pd->idx)
-				pd->idx = alloc_idx(pd->ses->ifindex);
-
-			if (install_limiter(ev->ses, pd->cur_tr->down_speed, pd->cur_tr->down_burst, pd->cur_tr->up_speed, pd->cur_tr->up_burst, pd->idx)) {
-				ev->res= -1;
-				return;
-			} else {
-				if (conf_verbose)
-					log_ppp_info2("shaper: changed shaper %i/%i (Kbit)\n", pd->down_speed, pd->up_speed);
-			}
-		} else {
-			if (conf_verbose)
-				log_ppp_info2("shaper: removed shaper\n");
-		}
-	}
+    /* Reconfigure all shapers according to new attributes */
+    pd->down_speed = pd->cur_tr->down_speed;
+    pd->up_speed = pd->cur_tr->up_speed;
+    if (pd->idx && remove_limiter(ev->ses, pd->idx)) {
+        ev->res = -1;
+        return;
+    }
+    if (!pd->idx)
+        pd->idx = alloc_idx(pd->ses->ifindex);
+    if (install_limiter(ev->ses, pd->cur_tr->down_speed, pd->cur_tr->down_burst,
+                    pd->cur_tr->up_speed, pd->cur_tr->up_burst, pd->idx)) {
+        ev->res = -1;
+        return;
+    }
+    if (conf_verbose) {
+        if (pd->cur_tr->down_speed > 0 || pd->cur_tr->up_speed > 0 || !list_empty(&pd->fwmark_list))
+            log_ppp_info2("shaper: changed shaper %i/%i (Kbit)\n", pd->cur_tr->down_speed, pd->cur_tr->up_speed);
+        else
+            log_ppp_info2("shaper: removed shaper\n");
+    }
 }
 #endif
 
@@ -631,32 +721,40 @@ static void shaper_change_help(char * const *f, int f_cnt, void *cli)
 
 static void shaper_change(struct shaper_pd_t *pd)
 {
-	if (!pd->ses || pd->ses->terminating)
-		goto out;
+    if (!pd->ses || pd->ses->terminating)
+        goto out;
 
-	if (pd->down_speed || pd->up_speed)
-		remove_limiter(pd->ses, pd->idx);
-	else if (!pd->idx)
-		pd->idx = alloc_idx(pd->ses->ifindex);
+    if (pd->down_speed || pd->up_speed)
+        remove_limiter(pd->ses, pd->idx);
+    else if (!pd->idx)
+        pd->idx = alloc_idx(pd->ses->ifindex);
 
-	if (pd->temp_down_speed || pd->temp_up_speed) {
-		pd->down_speed = pd->temp_down_speed;
-		pd->up_speed = pd->temp_up_speed;
-		install_limiter(pd->ses, pd->temp_down_speed, 0, pd->temp_up_speed, 0, pd->idx);
-	} else if (pd->cur_tr->down_speed || pd->cur_tr->up_speed) {
-		pd->down_speed = pd->cur_tr->down_speed;
-		pd->up_speed = pd->cur_tr->up_speed;
-		install_limiter(pd->ses, pd->cur_tr->down_speed, pd->cur_tr->down_burst, pd->cur_tr->up_speed, pd->cur_tr->up_burst, pd->idx);
-	} else {
-		pd->down_speed = 0;
-		pd->up_speed = 0;
-	}
+    if (pd->temp_down_speed || pd->temp_up_speed) {
+        pd->down_speed = pd->temp_down_speed;
+        pd->up_speed = pd->temp_up_speed;
+        install_limiter(pd->ses, pd->temp_down_speed, 0, pd->temp_up_speed, 0, pd->idx);
+    } else if (pd->cur_tr->down_speed || pd->cur_tr->up_speed) {
+        pd->down_speed = pd->cur_tr->down_speed;
+        pd->up_speed = pd->cur_tr->up_speed;
+        install_limiter(pd->ses, pd->cur_tr->down_speed, pd->cur_tr->down_burst, pd->cur_tr->up_speed, pd->cur_tr->up_burst, pd->idx);
+    } else if (list_empty(&pd->fwmark_list)) {
+        /* no rate-limit attributes present */
+        pd->down_speed = 0;
+        pd->up_speed = 0;
+    } else {
+        /* Only fwmark-based shapers (no base rate) */
+        pd->down_speed = 0;
+        pd->up_speed = 0;
+        if (!pd->idx)
+            pd->idx = alloc_idx(pd->ses->ifindex);
+        install_limiter(pd->ses, 0, 0, 0, 0, pd->idx);
+    }
 
 out:
-	if (__sync_sub_and_fetch(&pd->refs, 1) == 0) {
-		clear_tr_pd(pd);
-		_free(pd);
-	}
+    if (__sync_sub_and_fetch(&pd->refs, 1) == 0) {
+        clear_tr_pd(pd);
+        _free(pd);
+    }
 }
 
 static int shaper_change_exec(const char *cmd, char * const *f, int f_cnt, void *cli)
