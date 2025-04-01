@@ -647,14 +647,14 @@ static void ev_ppp_pre_up(struct ap_session *ses)
 		up_speed = temp_up_speed;
 		down_burst = 0;
 		up_burst = 0;
-	} else if (pd->cur_tr){
-		pd->down_speed = pd->cur_tr->down_speed;
-		pd->up_speed = pd->cur_tr->up_speed;
-		down_speed = pd->cur_tr->down_speed;
-		up_speed = pd->cur_tr->up_speed;
-		down_burst = pd->cur_tr->down_burst;
-		up_burst = pd->cur_tr->up_burst;
-	}
+	} else if (!list_empty(&pd->rules)) {
+		// установлены правила через fwmark
+		if (!pd->idx)
+			pd->idx = alloc_idx(ses->ifindex);
+		remove_limiter_rules(ses, pd); // на всякий случай
+		install_limiter_rules(ses, pd);
+		return;
+	}	
 	else if (dflt_down_speed || dflt_up_speed){
 		pd->down_speed = dflt_down_speed;
 		pd->up_speed = dflt_up_speed;
