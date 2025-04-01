@@ -1,0 +1,94 @@
+/* Патч для поддержки нескольких шейперов на одного абонента в accel-ppp по fwmark */
+
+/* === ДОБАВИТЬ в struct shaper_pd_t (shaper.c / .h) === */
+
+struct fwmark_shaper {
+    struct list_head entry;
+    int fwmark;
+    int down_speed;
+    int down_burst;
+    int up_speed;
+    int up_burst;
+};
+
+// в shaper_pd_t:
+struct list_head fwmark_list; // список шейперов по fwmark
+
+/* === ДОБАВИТЬ ВНУТРИ find_pd() === */
+INIT_LIST_HEAD(&spd->fwmark_list); // при создании shaper_pd_t
+
+/* === ФУНКЦИЯ: добавить fwmark шейпер === */
+static void add_fwmark_shaper(struct shaper_pd_t *pd, int fwmark, int up, int down) {
+    struct fwmark_shaper *fws = _malloc(sizeof(*fws));
+    memset(fws, 0, sizeof(*fws));
+    fws->fwmark = fwmark;
+    fws->up_speed = up;
+    fws->down_speed = down;
+    fws->up_burst = conf_up_burst_factor * up * 1000 / 8;
+    fws->down_burst = conf_down_burst_factor * down * 1000 / 8;
+    list_add_tail(&fws->entry, &pd->fwmark_list);
+}
+
+/* === МОДИФИЦИРОВАТЬ check_radius_attrs(): === */
+
+// внутри цикла по атрибутам:
+const char *name = attr->attr->name;
+int mark = 0;
+
+if (sscanf(name, "PPPD-Upstream-Speed-Limit-%d", &mark) == 1) {
+    up_speed = attr->val.integer;
+} else if (strcmp(name, "PPPD-Upstream-Speed-Limit") == 0) {
+    up_speed = attr->val.integer;
+}
+if (sscanf(name, "PPPD-Downstream-Speed-Limit-%d", &mark) == 1) {
+    down_speed = attr->val.integer;
+} else if (strcmp(name, "PPPD-Downstream-Speed-Limit") == 0) {
+    down_speed = attr->val.integer;
+}
+
+// После сбора обоих значений (например, через временный map), вызвать:
+add_fwmark_shaper(pd, mark, up_speed, down_speed);
+
+/* === ДОБАВИТЬ В КОНЕЦ install_limiter(): === */
+
+// дополнительная установка классов и фильтров для всех fwmark:
+struct fwmark_shaper *fws;
+list_for_each_entry(fws, &pd->fwmark_list, entry) {
+    if (fws->fwmark == 0) continue; // уже установлен
+    int classid = 0x00010000 + fws->fwmark + 1;
+    install_htb(net->rtnl_get(), ses->ifindex, fws->down_speed * 1000 / 8, fws->down_burst);
+    install_leaf_qdisc(net->rtnl_get(), ses->ifindex, classid, fws->fwmark << 16);
+    install_fwmark_with_class(net->rtnl_get(), ses->ifindex, 0x00010000, fws->fwmark, classid);
+}
+
+/* === ДОБАВИТЬ ФУНКЦИЮ install_fwmark_with_class(): === */
+int install_fwmark_with_class(struct rtnl_handle *rth, int ifindex, int parent, int fwmark, int classid) {
+    struct {
+        struct nlmsghdr n;
+        struct tcmsg t;
+        char buf[1024];
+    } req;
+
+    struct rtattr *tail;
+
+    memset(&req, 0, sizeof(req));
+    req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
+    req.n.nlmsg_flags = NLM_F_REQUEST|NLM_F_EXCL|NLM_F_CREATE;
+    req.n.nlmsg_type = RTM_NEWTFILTER;
+    req.t.tcm_family = AF_UNSPEC;
+    req.t.tcm_ifindex = ifindex;
+    req.t.tcm_handle = fwmark;
+    req.t.tcm_parent = parent;
+    req.t.tcm_info = TC_H_MAKE(1 << 16, ntohs(ETH_P_ALL));
+
+    addattr_l(&req.n, sizeof(req), TCA_KIND, "fw", 3);
+    tail = NLMSG_TAIL(&req.n);
+    addattr_l(&req.n, sizeof(req), TCA_OPTIONS, NULL, 0);
+    addattr32(&req.n, sizeof(req), TCA_FW_CLASSID, classid);
+    tail->rta_len = (void *)NLMSG_TAIL(&req.n) - (void *)tail;
+
+    return rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0);
+}
+
+/* === В shaper.h === */
+int install_fwmark_with_class(struct rtnl_handle *rth, int ifindex, int parent, int fwmark, int classid);
