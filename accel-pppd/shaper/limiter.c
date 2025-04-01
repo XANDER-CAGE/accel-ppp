@@ -277,106 +277,6 @@ static int install_htb(struct rtnl_handle *rth, int ifindex, int rate, int burst
 	return 0;
 }
 
-int install_htb_with_fwmark(struct ap_session *ses, struct shaper_rule *rule, int base_classid)
-{
-	int ifindex = ses->ifindex;
-	struct rtnl_handle *rth = &g_rth;
-	uint32_t classid = TC_H_MAKE(0x1, rule->fwmark);  // уникальный classid для каждого fwmark
-	uint32_t parent = TC_H_MAKE(0x1, 0);              // основа дерева HTB
-	uint32_t handle = TC_H_MAKE(1, 0);                // HTB root
-
-	struct qdisc_opt root_opt = {
-		.kind = "htb",
-		.handle = handle,
-		.parent = TC_H_ROOT,
-		.quantum = conf_r2q,
-		.defcls = 1,
-		.qdisc = qdisc_htb_root,
-	};
-
-	struct qdisc_opt class_opt = {
-		.kind = "htb",
-		.handle = classid,
-		.parent = parent,
-		.rate = rule->down_speed,
-		.buffer = rule->down_burst,
-		.quantum = conf_quantum,
-		.qdisc = qdisc_htb_class,
-	};
-
-	// Установка корневого HTB (один раз на интерфейс)
-	tc_qdisc_modify(rth, ifindex, RTM_NEWQDISC, NLM_F_CREATE|NLM_F_EXCL, &root_opt);
-
-	// Добавление класса с нужной скоростью
-	tc_qdisc_modify(rth, ifindex, RTM_NEWTCLASS, NLM_F_CREATE|NLM_F_EXCL, &class_opt);
-
-	// Добавление фильтра с fwmark
-	struct {
-		struct nlmsghdr n;
-		struct tcmsg t;
-		char buf[TCA_BUF_MAX];
-	} req;
-
-	memset(&req, 0, sizeof(req));
-	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
-	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL;
-	req.n.nlmsg_type = RTM_NEWTFILTER;
-	req.t.tcm_family = AF_UNSPEC;
-	req.t.tcm_ifindex = ifindex;
-	req.t.tcm_parent = TC_H_ROOT;
-	req.t.tcm_info = TC_H_MAKE(1, htons(ETH_P_ALL));
-
-	addattr_l(&req.n, sizeof(req), TCA_KIND, "fw", 3);
-	struct rtattr *tail = NLMSG_TAIL(&req.n);
-	addattr_l(&req.n, sizeof(req), TCA_OPTIONS, NULL, 0);
-	addattr_l(&req.n, sizeof(req), TCA_FW_CLASSID, &classid, sizeof(classid));
-	tail->rta_len = (void *)NLMSG_TAIL(&req.n) - (void *)tail;
-
-	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
-		return -1;
-
-	return 0;
-}
-
-int remove_htb_with_fwmark(struct ap_session *ses, struct shaper_rule *rule)
-{
-	struct rtnl_handle *rth = &g_rth;
-	int ifindex = ses->ifindex;
-	uint32_t classid = TC_H_MAKE(0x1, rule->fwmark);
-
-	struct qdisc_opt class_opt = {
-		.kind = "htb",
-		.handle = classid,
-		.parent = TC_H_MAKE(0x1, 0),
-	};
-
-	// Удаление фильтра fw
-	struct {
-		struct nlmsghdr n;
-		struct tcmsg t;
-		char buf[TCA_BUF_MAX];
-	} req;
-
-	memset(&req, 0, sizeof(req));
-	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
-	req.n.nlmsg_flags = NLM_F_REQUEST;
-	req.n.nlmsg_type = RTM_DELTFILTER;
-	req.t.tcm_family = AF_UNSPEC;
-	req.t.tcm_ifindex = ifindex;
-	req.t.tcm_parent = TC_H_ROOT;
-	req.t.tcm_info = TC_H_MAKE(1, htons(ETH_P_ALL));
-
-	addattr_l(&req.n, sizeof(req), TCA_KIND, "fw", 3);
-
-	rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 1);  // Best effort
-
-	// Удаление класса HTB
-	tc_qdisc_modify(rth, ifindex, RTM_DELTCLASS, 0, &class_opt);
-
-	return 0;
-}
-
-
 static int install_police(struct rtnl_handle *rth, int ifindex, int rate, int burst)
 {
 	__u32 rtab[256];
@@ -636,6 +536,105 @@ static int remove_htb_ifb(struct rtnl_handle *rth, int ifindex, int priority)
 	};
 
 	return tc_qdisc_modify(rth, conf_ifb_ifindex, RTM_DELTCLASS, 0, &opt);
+}
+
+int install_htb_with_fwmark(struct ap_session *ses, struct shaper_rule *rule, int base_classid)
+{
+    int ifindex = ses->ifindex;
+    struct rtnl_handle *rth = &g_rth;
+    uint32_t classid = TC_H_MAKE(0x1, rule->fwmark);  // уникальный classid для каждого fwmark
+    uint32_t parent = TC_H_MAKE(0x1, 0);              // основа дерева HTB
+    uint32_t handle = TC_H_MAKE(1, 0);                // HTB root
+
+    struct qdisc_opt root_opt = {
+        .kind = "htb",
+        .handle = handle,
+        .parent = TC_H_ROOT,
+        .quantum = conf_r2q,
+        .defcls = 1,
+        .qdisc = qdisc_htb_root,
+    };
+
+    struct qdisc_opt class_opt = {
+        .kind = "htb",
+        .handle = classid,
+        .parent = parent,
+        .rate = rule->down_speed,
+        .buffer = rule->down_burst,
+        .quantum = conf_quantum,
+        .qdisc = qdisc_htb_class,
+    };
+
+    // Установка корневого HTB (один раз на интерфейс)
+    tc_qdisc_modify(rth, ifindex, RTM_NEWQDISC, NLM_F_CREATE|NLM_F_EXCL, &root_opt);
+
+    // Добавление класса с нужной скоростью
+    tc_qdisc_modify(rth, ifindex, RTM_NEWTCLASS, NLM_F_CREATE|NLM_F_EXCL, &class_opt);
+
+    // Добавление фильтра с fwmark
+    struct {
+        struct nlmsghdr n;
+        struct tcmsg t;
+        char buf[TCA_BUF_MAX];
+    } req;
+
+    memset(&req, 0, sizeof(req));
+    req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
+    req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL;
+    req.n.nlmsg_type = RTM_NEWTFILTER;
+    req.t.tcm_family = AF_UNSPEC;
+    req.t.tcm_ifindex = ifindex;
+    req.t.tcm_parent = TC_H_MAKE(1, 0); // parent должен быть classid HTB root (1:)
+    req.t.tcm_info = TC_H_MAKE(1, htons(ETH_P_ALL));
+
+    addattr_l(&req.n, sizeof(req), TCA_KIND, "fw", 3);
+    struct rtattr *tail = NLMSG_TAIL(&req.n);
+    addattr_l(&req.n, sizeof(req), TCA_OPTIONS, NULL, 0);
+    addattr_l(&req.n, sizeof(req), TCA_FW_CLASSID, &classid, sizeof(classid));
+    tail->rta_len = (void *)NLMSG_TAIL(&req.n) - (void *)tail;
+
+    if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
+        return -1;
+
+    return 0;
+}
+
+int remove_htb_with_fwmark(struct ap_session *ses, struct shaper_rule *rule)
+{
+    struct rtnl_handle *rth = &g_rth;
+    int ifindex = ses->ifindex;
+    uint32_t classid = TC_H_MAKE(0x1, rule->fwmark);
+
+    struct qdisc_opt class_opt = {
+        .kind = "htb",
+        .handle = classid,
+        .parent = TC_H_MAKE(0x1, 0),
+    };
+
+    // Удаление фильтра fw
+    struct {
+        struct nlmsghdr n;
+        struct tcmsg t;
+        char buf[TCA_BUF_MAX];
+    } req;
+
+    memset(&req, 0, sizeof(req));
+    req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
+    req.n.nlmsg_flags = NLM_F_REQUEST;
+    req.n.nlmsg_type = RTM_DELTFILTER;
+    req.t.tcm_family = AF_UNSPEC;
+    req.t.tcm_ifindex = ifindex;
+    req.t.tcm_parent = TC_H_ROOT;
+    req.t.tcm_info = TC_H_MAKE(1, htons(ETH_P_ALL));
+
+    addattr_l(&req.n, sizeof(req), TCA_KIND, "fw", 3);
+
+    rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 1);  // Best effort
+
+    // Удаление класса HTB
+    tc_qdisc_modify(rth, ifindex, RTM_DELTCLASS, 0, &class_opt);
+
+    return 0;
 }
 
 int install_limiter(struct ap_session *ses, int down_speed, int down_burst, int up_speed, int up_burst, int idx)

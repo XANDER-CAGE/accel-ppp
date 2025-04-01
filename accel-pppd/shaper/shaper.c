@@ -73,18 +73,18 @@ static LIST_HEAD(shaper_list);
 
 struct time_range_pd_t;
 struct shaper_pd_t {
-	struct list_head entry;
-	struct ap_session *ses;
-	struct ap_private pd;
-	int temp_down_speed;
-	int temp_up_speed;
-	int down_speed;
-	int up_speed;
-	struct list_head tr_list;
-	struct time_range_pd_t *cur_tr;
-	int refs;
-	int idx;
-	struct list_head rules;
+    struct list_head entry;
+    struct ap_session *ses;
+    struct ap_private pd;
+    int temp_down_speed;
+    int temp_up_speed;
+    int down_speed;
+    int up_speed;
+    struct list_head tr_list;
+    struct time_range_pd_t *cur_tr;
+    int refs;
+    int idx;
+    struct list_head rules;
 };
 
 struct time_range_pd_t {
@@ -162,63 +162,61 @@ static void free_idx(int idx)
 
 static struct shaper_pd_t *find_pd(struct ap_session *ses, int create)
 {
-	struct ap_private *pd;
-	struct shaper_pd_t *spd;
+    struct ap_private *pd;
+    struct shaper_pd_t *spd;
 
-	list_for_each_entry(pd, &ses->pd_list, entry) {
-		if (pd->key == &pd_key) {
-			spd = container_of(pd, typeof(*spd), pd);
-			return spd;
-		}
-	}
+    list_for_each_entry(pd, &ses->pd_list, entry) {
+        if (pd->key == &pd_key) {
+            spd = container_of(pd, typeof(*spd), pd);
+            return spd;
+        }
+    }
 
-	if (create) {
-		spd = _malloc(sizeof(*spd));
-		if (!spd) {
-			log_emerg("shaper: out of memory\n");
-			return NULL;
-		}
+    if (create) {
+        spd = _malloc(sizeof(*spd));
+        if (!spd) {
+            log_emerg("shaper: out of memory\n");
+            return NULL;
+        }
 
-		memset(spd, 0, sizeof(*spd));
-		spd->ses = ses;
-		list_add_tail(&spd->pd.entry, &ses->pd_list);
-		spd->pd.key = &pd_key;
-		INIT_LIST_HEAD(&spd->tr_list);
-		spd->refs = 1;
-		INIT_LIST_HEAD(&spd->rules);
+        memset(spd, 0, sizeof(*spd));
+        spd->ses = ses;
+        list_add_tail(&spd->pd.entry, &ses->pd_list);
+        spd->pd.key = &pd_key;
+        INIT_LIST_HEAD(&spd->tr_list);
+        spd->refs = 1;
+        INIT_LIST_HEAD(&spd->rules);
+        pthread_rwlock_wrlock(&shaper_lock);
+        list_add_tail(&spd->entry, &shaper_list);
+        pthread_rwlock_unlock(&shaper_lock);
+        return spd;
+    }
 
-
-		pthread_rwlock_wrlock(&shaper_lock);
-		list_add_tail(&spd->entry, &shaper_list);
-		pthread_rwlock_unlock(&shaper_lock);
-		return spd;
-	}
-
-	return NULL;
+    return NULL;
 }
 
 static int install_limiter_rules(struct ap_session *ses, struct shaper_pd_t *pd)
 {
-	struct shaper_rule *rule;
+    struct shaper_rule *rule;
 
-	list_for_each_entry(rule, &pd->rules, entry) {
-		if (rule->down_speed <= 0 && rule->up_speed <= 0)
-			continue;
+    list_for_each_entry(rule, &pd->rules, entry) {
+        if (rule->down_speed <= 0 && rule->up_speed <= 0)
+            continue;
 
-		if (!pd->idx)
-			pd->idx = alloc_idx(ses->ifindex);
+        if (!pd->idx)
+            pd->idx = alloc_idx(ses->ifindex);
 
-		if (install_htb_with_fwmark(ses, rule, pd->idx)) {
-			log_ppp_error("shaper: failed to install fwmark shaper (fwmark=%d)\n", rule->fwmark);
-			return -1;
-		}
+        if (install_htb_with_fwmark(ses, rule, pd->idx)) {
+            log_ppp_error("shaper: failed to install fwmark shaper (fwmark=%d)\n", rule->fwmark);
+            return -1;
+        }
 
-		if (conf_verbose)
-			log_ppp_info2("shaper: installed fwmark shaper %d: %d/%d Kbit\n",
-				rule->fwmark, rule->down_speed, rule->up_speed);
-	}
+        if (conf_verbose)
+            log_ppp_info2("shaper: installed fwmark shaper %d: %d/%d Kbit\n",
+                rule->fwmark, rule->down_speed, rule->up_speed);
+    }
 
-	return 0;
+    return 0;
 }
 
 static long int parse_integer(const char *str, char **endptr, double *multiplier)
@@ -417,52 +415,52 @@ static void parse_attr(struct rad_attr_t *attr, int dir, int *speed, int *burst,
 
 static struct shaper_rule* find_or_create_rule(struct shaper_pd_t *pd, int fwmark)
 {
-	struct shaper_rule *rule;
+    struct shaper_rule *rule;
 
-	list_for_each_entry(rule, &pd->rules, entry) {
-		if (rule->fwmark == fwmark)
-			return rule;
-	}
+    list_for_each_entry(rule, &pd->rules, entry) {
+        if (rule->fwmark == fwmark)
+            return rule;
+    }
 
-	// not found - create new
-	rule = _malloc(sizeof(*rule));
-	if (!rule) {
-		log_emerg("shaper: out of memory\n");
-		return NULL;
-	}
+    // not found - create new
+    rule = _malloc(sizeof(*rule));
+    if (!rule) {
+        log_emerg("shaper: out of memory\n");
+        return NULL;
+    }
 
-	memset(rule, 0, sizeof(*rule));
-	rule->fwmark = fwmark;
-	list_add_tail(&rule->entry, &pd->rules);
+    memset(rule, 0, sizeof(*rule));
+    rule->fwmark = fwmark;
+    list_add_tail(&rule->entry, &pd->rules);
 
-	return rule;
+    return rule;
 }
 
 static void parse_radius_attr(struct shaper_pd_t *pd, struct rad_attr_t *attr)
 {
-	int fwmark = 0;
-	struct shaper_rule *rule = NULL;
+    int fwmark = 0;
+    struct shaper_rule *rule = NULL;
 
-	if (attr->attr->type != ATTR_TYPE_INTEGER)
-		return;
+    if (attr->attr->type != ATTR_TYPE_INTEGER)
+        return;
 
-	if (sscanf(attr->attr->name, "PPPD-Upstream-Speed-Limit-%d", &fwmark) == 1) {
-		rule = find_or_create_rule(pd, fwmark);
-		if (rule && attr->val.integer > 0 && rule->up_speed != attr->val.integer) {
-			rule->up_speed = attr->val.integer;
-			if (conf_verbose)
-				log_ppp_info2("shaper: RADIUS set up_speed for fwmark=%d: %d Kbps\n", fwmark, rule->up_speed);
-		}
-	} else if (sscanf(attr->attr->name, "PPPD-Downstream-Speed-Limit-%d", &fwmark) == 1) {
-		rule = find_or_create_rule(pd, fwmark);
-		if (rule) rule->down_speed = attr->val.integer;
-	} else if (strcmp(attr->attr->name, "PPPD-Upstream-Speed-Limit") == 0) {
-		rule = find_or_create_rule(pd, 0); // default
-		if (rule) rule->up_speed = attr->val.integer;
-	} else if (strcmp(attr->attr->name, "PPPD-Downstream-Speed-Limit") == 0) {
-		rule = find_or_create_rule(pd, 0);
-		if (rule) rule->down_speed = attr->val.integer;
-	}
+    if (sscanf(attr->attr->name, "PPPD-Upstream-Speed-Limit-%d", &fwmark) == 1) {
+        rule = find_or_create_rule(pd, fwmark);
+        if (rule && attr->val.integer > 0 && rule->up_speed != attr->val.integer) {
+            rule->up_speed = attr->val.integer;
+            if (conf_verbose)
+                log_ppp_info2("shaper: RADIUS set up_speed for fwmark=%d: %d Kbps\n", fwmark, rule->up_speed);
+        }
+    } else if (sscanf(attr->attr->name, "PPPD-Downstream-Speed-Limit-%d", &fwmark) == 1) {
+        rule = find_or_create_rule(pd, fwmark);
+        if (rule) rule->down_speed = attr->val.integer;
+    } else if (strcmp(attr->attr->name, "PPPD-Upstream-Speed-Limit") == 0) {
+        rule = find_or_create_rule(pd, 0); // default
+        if (rule) rule->up_speed = attr->val.integer;
+    } else if (strcmp(attr->attr->name, "PPPD-Downstream-Speed-Limit") == 0) {
+        rule = find_or_create_rule(pd, 0);
+        if (rule) rule->down_speed = attr->val.integer;
+    }
 }
 
 static void remove_limiter_rules(struct ap_session *ses, struct shaper_pd_t *pd)
@@ -481,104 +479,113 @@ static void remove_limiter_rules(struct ap_session *ses, struct shaper_pd_t *pd)
 
 static int check_radius_attrs(struct shaper_pd_t *pd, struct rad_packet_t *pack)
 {
-	struct rad_attr_t *attr;
-	int down_speed, down_burst;
-	int up_speed, up_burst;
-	int tr_id;
-	struct time_range_pd_t *tr_pd;
-	int r = 0;
+    struct rad_attr_t *attr;
+    int down_speed, down_burst;
+    int up_speed, up_burst;
+    int tr_id;
+    struct time_range_pd_t *tr_pd;
+    int r = 0;
 
-	list_for_each_entry(tr_pd, &pd->tr_list, entry)
-		tr_pd->act = 0;
+    list_for_each_entry(tr_pd, &pd->tr_list, entry)
+        tr_pd->act = 0;
 
-	pd->cur_tr = NULL;
+    pd->cur_tr = NULL;
 
-	list_for_each_entry(attr, &pack->attrs, entry) {
-		parse_radius_attr(pd, attr);
-	}
+    list_for_each_entry(attr, &pack->attrs, entry) {
+        parse_radius_attr(pd, attr);
+    }
 
-	if (conf_verbose) {
-		struct shaper_rule *rule;
-		log_ppp_info2("shaper: rules parsed from RADIUS:\n");
-		list_for_each_entry(rule, &pd->rules, entry) {
-			log_ppp_info2("  fwmark=%d: up=%d, down=%d (Kbps)\n",
-				rule->fwmark, rule->up_speed, rule->down_speed);
-		}
-	}
-	
+    if (conf_verbose) {
+        struct shaper_rule *rule;
+        log_ppp_info2("shaper: rules parsed from RADIUS:\n");
+        list_for_each_entry(rule, &pd->rules, entry) {
+            log_ppp_info2("  fwmark=%d: up=%d, down=%d (Kbps)\n",
+                rule->fwmark, rule->up_speed, rule->down_speed);
+        }
+    }
+    
+    if (!r)
+        return 0;
 
-	if (!r)
-		return 0;
+    if (!pd->cur_tr)
+        pd->cur_tr = get_tr_pd(pd, 0);
 
-	if (!pd->cur_tr)
-		pd->cur_tr = get_tr_pd(pd, 0);
+    clear_old_tr_pd(pd);
 
-	clear_old_tr_pd(pd);
-
-	return 1;
+    return 1;
 }
 
 static void ev_radius_access_accept(struct ev_radius_t *ev)
 {
-	struct shaper_pd_t *pd = find_pd(ev->ses, 1);
+    struct shaper_pd_t *pd = find_pd(ev->ses, 1);
 
-	if (!pd)
-		return;
+    if (!pd)
+        return;
 
-	check_radius_attrs(pd, ev->reply);
+    check_radius_attrs(pd, ev->reply);
 }
 
 static void ev_radius_coa(struct ev_radius_t *ev)
 {
-	struct shaper_pd_t *pd = find_pd(ev->ses, 0);
+    struct shaper_pd_t *pd = find_pd(ev->ses, 0);
 
-	if (!pd) {
-		ev->res = -1;
-		return;
-	}
+    if (!pd) {
+        ev->res = -1;
+        return;
+    }
 
-	if (!check_radius_attrs(pd, ev->request))
-		return;
+    if (!check_radius_attrs(pd, ev->request))
+        return;
 
-	if (pd->temp_down_speed || pd->temp_up_speed)
-		return;
+    if (pd->temp_down_speed || pd->temp_up_speed)
+        return;
 
-	if (!pd->cur_tr) {
-		if (pd->down_speed || pd->up_speed) {
-			pd->down_speed = 0;
-			pd->up_speed = 0;
-			if (conf_verbose)
-				log_ppp_info2("shaper: removed shaper\n");
-			remove_limiter(ev->ses, pd->idx);
-		}
-		return;
-	}
+    if (!list_empty(&pd->rules)) {
+        // Если есть правила с fwmark, пересоздаем их
+        remove_limiter_rules(ev->ses, pd);
+        if (install_limiter_rules(ev->ses, pd)) {
+            ev->res = -1;
+            return;
+        }
+        return;
+    }
 
-	if (pd->down_speed != pd->cur_tr->down_speed || pd->up_speed != pd->cur_tr->up_speed) {
-		pd->down_speed = pd->cur_tr->down_speed;
-		pd->up_speed = pd->cur_tr->up_speed;
+    if (!pd->cur_tr) {
+        if (pd->down_speed || pd->up_speed) {
+            pd->down_speed = 0;
+            pd->up_speed = 0;
+            if (conf_verbose)
+                log_ppp_info2("shaper: removed shaper\n");
+            remove_limiter(ev->ses, pd->idx);
+        }
+        return;
+    }
 
-		if (pd->idx && remove_limiter(ev->ses, pd->idx)) {
-			ev->res = -1;
-			return;
-		}
+    if (pd->down_speed != pd->cur_tr->down_speed || pd->up_speed != pd->cur_tr->up_speed) {
+        pd->down_speed = pd->cur_tr->down_speed;
+        pd->up_speed = pd->cur_tr->up_speed;
 
-		if (pd->down_speed > 0 || pd->up_speed > 0) {
-			if (!pd->idx)
-				pd->idx = alloc_idx(pd->ses->ifindex);
+        if (pd->idx && remove_limiter(ev->ses, pd->idx)) {
+            ev->res = -1;
+            return;
+        }
 
-			if (install_limiter_rules(ev->ses, pd)) {
-				ev->res= -1;
-				return;
-			} else {
-				if (conf_verbose)
-					log_ppp_info2("shaper: changed shaper %i/%i (Kbit)\n", pd->down_speed, pd->up_speed);
-			}
-		} else {
-			if (conf_verbose)
-				log_ppp_info2("shaper: removed shaper\n");
-		}
-	}
+        if (pd->down_speed > 0 || pd->up_speed > 0) {
+            if (!pd->idx)
+                pd->idx = alloc_idx(pd->ses->ifindex);
+
+            if (install_limiter(ev->ses, pd->down_speed, pd->cur_tr->down_burst, pd->up_speed, pd->cur_tr->up_burst, pd->idx)) {
+                ev->res= -1;
+                return;
+            } else {
+                if (conf_verbose)
+                    log_ppp_info2("shaper: changed shaper %i/%i (Kbit)\n", pd->down_speed, pd->up_speed);
+            }
+        } else {
+            if (conf_verbose)
+                log_ppp_info2("shaper: removed shaper\n");
+        }
+    }
 }
 #endif
 
@@ -631,50 +638,50 @@ static void ev_shaper(struct ev_shaper_t *ev)
 
 static void ev_ppp_pre_up(struct ap_session *ses)
 {
-	int down_speed, down_burst;
-	int up_speed, up_burst;
-	struct shaper_pd_t *pd = find_pd(ses, 1);
+    int down_speed, down_burst;
+    int up_speed, up_burst;
+    struct shaper_pd_t *pd = find_pd(ses, 1);
 
-	if (!pd)
-		return;
+    if (!pd)
+        return;
 
-	if (temp_down_speed || temp_up_speed) {
-		pd->temp_down_speed = temp_down_speed;
-		pd->temp_up_speed = temp_up_speed;
-		pd->down_speed = temp_down_speed;
-		pd->up_speed = temp_up_speed;
-		down_speed = temp_down_speed;
-		up_speed = temp_up_speed;
-		down_burst = 0;
-		up_burst = 0;
-	} else if (!list_empty(&pd->rules)) {
-		// установлены правила через fwmark
-		if (!pd->idx)
-			pd->idx = alloc_idx(ses->ifindex);
-		remove_limiter_rules(ses, pd); // на всякий случай
-		install_limiter_rules(ses, pd);
-		return;
-	}	
-	else if (dflt_down_speed || dflt_up_speed){
-		pd->down_speed = dflt_down_speed;
-		pd->up_speed = dflt_up_speed;
-		down_speed = dflt_down_speed;
-		up_speed =  dflt_up_speed;
-		down_burst = 0;
-		up_burst = 0;
-	}
-	else return;
+    if (temp_down_speed || temp_up_speed) {
+        pd->temp_down_speed = temp_down_speed;
+        pd->temp_up_speed = temp_up_speed;
+        pd->down_speed = temp_down_speed;
+        pd->up_speed = temp_up_speed;
+        down_speed = temp_down_speed;
+        up_speed = temp_up_speed;
+        down_burst = 0;
+        up_burst = 0;
+    } else if (!list_empty(&pd->rules)) {
+        // установлены правила через fwmark
+        if (!pd->idx)
+            pd->idx = alloc_idx(ses->ifindex);
+        remove_limiter_rules(ses, pd); // на всякий случай
+        install_limiter_rules(ses, pd);
+        return;
+    }    
+    else if (dflt_down_speed || dflt_up_speed){
+        pd->down_speed = dflt_down_speed;
+        pd->up_speed = dflt_up_speed;
+        down_speed = dflt_down_speed;
+        up_speed =  dflt_up_speed;
+        down_burst = 0;
+        up_burst = 0;
+    }
+    else return;
 
-	if (!pd->idx)
-		pd->idx = alloc_idx(ses->ifindex);
+    if (!pd->idx)
+        pd->idx = alloc_idx(ses->ifindex);
 
-	if (down_speed > 0 || up_speed > 0) {
-		remove_limiter_rules(ses, pd);
-		if (!install_limiter_rules(ses, pd)) {
-			if (conf_verbose)
-				log_ppp_info2("shaper: installed shaper %i/%i (Kbit)\n", down_speed, up_speed);
-		}
-	}
+    if (down_speed > 0 || up_speed > 0) {
+        remove_limiter_rules(ses, pd);
+        if (!install_limiter(ses, down_speed, down_burst, up_speed, up_burst, pd->idx)) {
+            if (conf_verbose)
+                log_ppp_info2("shaper: installed shaper %i/%i (Kbit)\n", down_speed, up_speed);
+        }
+    }
 }
 
 static void ev_ppp_finishing(struct ap_session *ses)
