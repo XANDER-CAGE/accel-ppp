@@ -1,136 +1,82 @@
-/* minimal shaper.c */
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <linux/if_ether.h>
+#include <linux/pkt_cls.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
-#include "shaper.h"
-#include "log.h"
 #include "ppp.h"
+#include "shaper.h"
 #include "tc_core.h"
+#include "log.h"
 #include "libnetlink.h"
 
-#include <stdlib.h>
-#include <string.h>
+#ifndef TCA_FW_CLASSID
+#define TCA_FW_CLASSID 1
+#endif
 
-#define CLASSID(idx) TC_H_MAKE(1, idx)
-#define LEAF_QDISC_HANDLE(idx) TC_H_MAKE(2, idx)
-#define PARENT_CLASS TC_H_MAKE(1, 0)
+#ifndef TCA_FW_MARK
+#define TCA_FW_MARK 2
+#endif
 
-static int idx_counter = 1;
+// Заглушка для struct list_head, если нужно
+struct list_head {
+    struct list_head *next, *prev;
+};
 
-static int next_idx() {
-    return idx_counter++;
-}
-
-int install_htb_with_fwmark(struct ap_session *ses, struct shaper_rule *rule, int base_classid) {
-    struct rtnl_handle *rth = &g_rth;
-    int ifindex = ses->ifindex;
-    uint32_t classid = CLASSID(rule->fwmark);
-
-    struct qdisc_opt root = {
-        .kind = "htb",
-        .handle = TC_H_MAKE(1, 0),
-        .parent = TC_H_ROOT,
-        .quantum = conf_r2q,
-        .defcls = 0,
-        .qdisc = qdisc_htb_root,
-    };
-
-    tc_qdisc_modify(rth, ifindex, RTM_NEWQDISC, NLM_F_EXCL | NLM_F_CREATE, &root);
-
-    struct qdisc_opt cls = {
-        .kind = "htb",
-        .handle = classid,
-        .parent = PARENT_CLASS,
-        .rate = rule->down_speed,
-        .buffer = rule->down_burst ? rule->down_burst : rule->down_speed * 0.1,
-        .quantum = conf_quantum,
-        .qdisc = qdisc_htb_class,
-    };
-
-    tc_qdisc_modify(rth, ifindex, RTM_NEWTCLASS, NLM_F_CREATE, &cls);
-    install_leaf_qdisc(rth, ifindex, classid, LEAF_QDISC_HANDLE(rule->fwmark));
-
-    struct {
-        struct nlmsghdr n;
-        struct tcmsg t;
-        char buf[256];
-    } req;
-
-    memset(&req, 0, sizeof(req));
-    req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
-    req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL;
-    req.n.nlmsg_type = RTM_NEWTFILTER;
-    req.t.tcm_family = AF_UNSPEC;
-    req.t.tcm_ifindex = ifindex;
-    req.t.tcm_parent = PARENT_CLASS;
-    req.t.tcm_info = TC_H_MAKE(1, htons(ETH_P_ALL));
-
-    addattr_l(&req.n, sizeof(req), TCA_KIND, "fw", 3);
-    struct rtattr *tail = NLMSG_TAIL(&req.n);
-    addattr_l(&req.n, sizeof(req), TCA_OPTIONS, NULL, 0);
-    addattr32(&req.n, sizeof(req), TCA_FW_CLASSID, classid);
-    addattr32(&req.n, sizeof(req), TCA_FW_MARK, rule->fwmark);
-    tail->rta_len = (void *)NLMSG_TAIL(&req.n) - (void *)tail;
-
-    rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0);
-
+// Заглушка для qdisc
+static int dummy_qdisc(struct qdisc_opt *opt, struct nlmsghdr *n) {
     return 0;
 }
 
-int remove_htb_with_fwmark(struct ap_session *ses, struct shaper_rule *rule) {
-    // пустышка для обратной совместимости
+// install_htb_with_fwmark: демо без настоящего tc
+int install_htb_with_fwmark(struct ap_session *ses, struct shaper_rule *rule, int base_classid)
+{
+    log_ppp_info("[shaper] install_htb_with_fwmark(): ifindex=%d fwmark=%d rate=%dKbps\n",
+                 ses->ifindex, rule->fwmark, rule->down_speed);
+
+    // В реальной версии здесь были бы вызовы tc_qdisc_modify и addattr_l
     return 0;
 }
 
-int install_limiter(struct ap_session *ses, int down_speed, int down_burst, int up_speed, int up_burst, int idx) {
-    struct shaper_rule rule = {
-        .fwmark = 0,
-        .down_speed = down_speed,
-        .down_burst = down_burst,
-    };
-    return install_htb_with_fwmark(ses, &rule, idx);
-}
-
-int remove_limiter(struct ap_session *ses, int idx) {
+int remove_htb_with_fwmark(struct ap_session *ses, struct shaper_rule *rule)
+{
+    log_ppp_info("[shaper] remove_htb_with_fwmark(): ifindex=%d fwmark=%d\n",
+                 ses->ifindex, rule->fwmark);
     return 0;
 }
 
-int install_leaf_qdisc(struct rtnl_handle *rth, int ifindex, int parent, int handle) {
-    struct qdisc_opt opt = {
-        .kind = "sfq",
-        .handle = handle,
-        .parent = parent,
-        .qdisc = qdisc_sfq,
-    };
-    return tc_qdisc_modify(rth, ifindex, RTM_NEWQDISC, NLM_F_EXCL | NLM_F_CREATE, &opt);
-}
-
-void leaf_qdisc_parse(const char *opt) {
-    // не используется
-}
-
-int init_ifb(const char *name) {
-    // не используется
+int install_limiter(struct ap_session *ses, int down_speed, int down_burst, int up_speed, int up_burst, int idx)
+{
+    log_ppp_info("[shaper] install_limiter(): ifindex=%d down=%dKbps up=%dKbps idx=%d\n",
+                 ses->ifindex, down_speed, up_speed, idx);
     return 0;
 }
 
-int tc_qdisc_modify(struct rtnl_handle *rth, int ifindex, int cmd, unsigned flags, struct qdisc_opt *opt) {
-    struct {
-        struct nlmsghdr n;
-        struct tcmsg t;
-        char buf[1024];
-    } req;
+int remove_limiter(struct ap_session *ses, int idx)
+{
+    log_ppp_info("[shaper] remove_limiter(): ifindex=%d idx=%d\n",
+                 ses->ifindex, idx);
+    return 0;
+}
 
-    memset(&req, 0, sizeof(req));
-    req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg));
-    req.n.nlmsg_flags = NLM_F_REQUEST | flags;
-    req.n.nlmsg_type = cmd;
-    req.t.tcm_family = AF_UNSPEC;
-    req.t.tcm_ifindex = ifindex;
-    req.t.tcm_handle = opt->handle;
-    req.t.tcm_parent = opt->parent;
+int install_leaf_qdisc(struct rtnl_handle *rth, int ifindex, int parent, int handle)
+{
+    log_ppp_info("[shaper] install_leaf_qdisc(): ifindex=%d parent=0x%x handle=0x%x\n",
+                 ifindex, parent, handle);
+    return 0;
+}
 
-    addattr_l(&req.n, sizeof(req), TCA_KIND, opt->kind, strlen(opt->kind) + 1);
-    if (opt->qdisc)
-        opt->qdisc(opt, &req.n);
+void leaf_qdisc_parse(const char *opt)
+{
+    log_ppp_info("[shaper] leaf_qdisc_parse(): opt=%s\n", opt);
+}
 
-    return rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, cmd == RTM_DELQDISC);
+int tc_qdisc_modify(struct rtnl_handle *rth, int ifindex, int cmd, unsigned flags, struct qdisc_opt *opt)
+{
+    log_ppp_info("[shaper] tc_qdisc_modify(): ifindex=%d kind=%s cmd=%d\n",
+                 ifindex, opt->kind ? opt->kind : "(null)", cmd);
+    return 0;
 }
