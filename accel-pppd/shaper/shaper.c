@@ -523,6 +523,7 @@ static int check_radius_attrs(struct shaper_pd_t *pd, struct rad_packet_t *pack)
 
 static void ev_radius_access_accept(struct ev_radius_t *ev)
 {
+	log_ppp_info("shaper: ev_radius_access_accept() triggered\n");.
     struct shaper_pd_t *pd = find_pd(ev->ses, 1);
 
     if (!pd)

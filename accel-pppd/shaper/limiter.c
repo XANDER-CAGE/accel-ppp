@@ -248,6 +248,7 @@ static int install_tbf(struct rtnl_handle *rth, int ifindex, int rate, int burst
 
 static int install_htb(struct rtnl_handle *rth, int ifindex, int rate, int burst)
 {
+	log_ppp_info("shaper: install_htb NOW");
 	struct qdisc_opt opt1 = {
 		.kind = "htb",
 		.handle = 0x00010000,
