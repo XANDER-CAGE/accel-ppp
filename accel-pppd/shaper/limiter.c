@@ -542,6 +542,7 @@ static int remove_htb_ifb(struct rtnl_handle *rth, int ifindex, int priority)
 #endif
 int install_htb_with_fwmark(struct ap_session *ses, struct shaper_rule *rule, int base_classid)
 {
+	log_ppp_info("shaper: calling install_htb_with_fwmark() for fwmark=%d\n", rule->fwmark);
     int ifindex = ses->ifindex;
     struct rtnl_handle *rth = &g_rth;
     uint32_t classid = TC_H_MAKE(1, rule->fwmark);  // classid для каждого fwmark, 1:fwmark
