@@ -489,17 +489,18 @@ static int check_radius_attrs(struct shaper_pd_t *pd, struct rad_packet_t *pack)
     struct time_range_pd_t *tr_pd;
     int had_rules = !list_empty(&pd->rules); // Запоминаем, были ли правила ранее
 
-    list_for_each_entry(attr, &pack->attrs, entry) {
+	// сначала удаляем старые правила
+	remove_limiter_rules(pd->ses, pd);
+
+	list_for_each_entry(attr, &pack->attrs, entry) {
 		parse_radius_attr(pd, attr);
 	}
-	
+
 	list_for_each_entry(tr_pd, &pd->tr_list, entry)
 		tr_pd->act = 0;
-	
+
 	pd->cur_tr = NULL;
-	
-	// затем удаляем старые правила
-	remove_limiter_rules(pd->ses, pd);
+
 
     if (conf_verbose) {
         struct shaper_rule *rule;
