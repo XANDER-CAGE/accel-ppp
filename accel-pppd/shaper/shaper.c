@@ -209,6 +209,7 @@ static int install_limiter_rules(struct ap_session *ses, struct shaper_pd_t *pd)
             pd->idx = alloc_idx(ses->ifindex);
 
         if (install_htb_with_fwmark(ses, rule, pd->idx)) {
+			log_ppp_info(">>> install_htb_with_fwmark: fwmark=%d, speed=%d\n", rule->fwmark, rule->down_speed);
             log_ppp_error("shaper: failed to install fwmark shaper (fwmark=%d)\n", rule->fwmark);
             continue;
         }
@@ -525,7 +526,7 @@ static int check_radius_attrs(struct shaper_pd_t *pd, struct rad_packet_t *pack)
 
 static void ev_radius_access_accept(struct ev_radius_t *ev)
 {
-	log_ppp_info2("shaper: ev_radius_access_accept() triggered\n");
+	log_ppp_info(">>> ev_radius_access_accept called for %s\n", ev->ses->ifname);
     struct shaper_pd_t *pd = find_pd(ev->ses, 1);
 
     if (!pd)
@@ -533,6 +534,7 @@ static void ev_radius_access_accept(struct ev_radius_t *ev)
 
     // Проверяем наличие RADIUS атрибутов для fwmark шейперов
     if (check_radius_attrs(pd, ev->reply) && !list_empty(&pd->rules)) {
+		log_ppp_info(">>> check_radius_attrs: rules present = %d\n", !list_empty(&pd->rules));
         // Есть правила, нужно установить шейперы
         if (!pd->idx)
             pd->idx = alloc_idx(ev->ses->ifindex);
@@ -657,6 +659,7 @@ static void ev_shaper(struct ev_shaper_t *ev)
 
 static void ev_ppp_pre_up(struct ap_session *ses)
 {
+	log_ppp_info(">>> ev_ppp_pre_up called for %s\n", ses->ifname);
     int down_speed, down_burst;
     int up_speed, up_burst;
     struct shaper_pd_t *pd = find_pd(ses, 1);
