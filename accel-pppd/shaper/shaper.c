@@ -197,6 +197,7 @@ static struct shaper_pd_t *find_pd(struct ap_session *ses, int create)
 
 static int install_limiter_rules(struct ap_session *ses, struct shaper_pd_t *pd)
 {
+	log_ppp_info("shaper: install_limiter_rules() called, %d rules\n", pd->rules.next != &pd->rules);
     struct shaper_rule *rule;
     int at_least_one_rule = 0;
 
@@ -441,6 +442,7 @@ static struct shaper_rule* find_or_create_rule(struct shaper_pd_t *pd, int fwmar
 
 static void parse_radius_attr(struct shaper_pd_t *pd, struct rad_attr_t *attr)
 {
+	log_ppp_info("shaper: attr name = %s, type = %d\n", attr->attr->name, attr->attr->type);
     int fwmark = 0;
     struct shaper_rule *rule = NULL;
 
