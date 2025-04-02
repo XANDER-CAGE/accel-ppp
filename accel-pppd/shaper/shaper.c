@@ -197,7 +197,7 @@ static struct shaper_pd_t *find_pd(struct ap_session *ses, int create)
 
 static int install_limiter_rules(struct ap_session *ses, struct shaper_pd_t *pd)
 {
-	log_ppp_info("shaper: install_limiter_rules() called, %d rules\n", pd->rules.next != &pd->rules);
+	log_ppp_info("shaper: install_limiter_rules()");
     struct shaper_rule *rule;
     int at_least_one_rule = 0;
 
